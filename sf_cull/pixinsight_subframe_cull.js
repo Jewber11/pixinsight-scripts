@@ -11,15 +11,15 @@
  * Automatic Subframe Cull
  *
  * SFS approval formula:
- *   FWHMsigma <= 2 && eccentricitysigma <= 2 &&
- *   mediansigma <= 2 && starsigma >= -1.5
+ *   FWHMSigma <= 2 && EccentricitySigma <= 2 &&
+ *   MedianSigma <= 2 && StarsSigma >= -1.5
  *
  * Use calibrated, linear frames when possible. Every readable image file below
  * the selected directory is treated as a stack frame.
  */
 
 var DEFAULT_APPROVAL_EXPRESSION =
-   "FWHMsigma <= 2 && eccentricitysigma <= 2 && mediansigma <= 2 && starsigma >= -1.5";
+   "FWHMSigma <= 2 && EccentricitySigma <= 2 && MedianSigma <= 2 && StarsSigma >= -1.5";
 
 function selectorConstant( name, fallback )
 {
