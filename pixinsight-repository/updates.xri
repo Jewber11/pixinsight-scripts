@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xri version="1.0">
+   <description>
+      <p>Personal PixInsight scripts.</p>
+   </description>
+   <platform os="all" arch="noarch" version="1.8.9:1.9.99">
+      <package fileName="pi_scripts-20260912-150915.zip" sha1="ae15ed168450ff0ae515156cb3343dd2428937e4" type="script" releaseDate="20260912">
+         <title>Personal PixInsight scripts 20260912</title>
+         <description>All JavaScript files under the pi_scripts directory.</description>
+      </package>
+   </platform>
+</xri>
