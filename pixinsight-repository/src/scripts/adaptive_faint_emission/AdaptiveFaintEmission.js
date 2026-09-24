@@ -6,7 +6,7 @@
 #include <pjsr/StdButton.jsh>
 
 #feature-id    Sam's Scripts > Adaptive Faint Emission
-#feature-info  Subject presets, image-derived tone, sliders, and downscaled before/after preview.
+#feature-info  Subject presets, exact 8-bit guide, image-derived tone, sliders, and preview.
 
 /*
  * Adaptive Faint Emission for PixInsight/PJSR.
@@ -174,7 +174,7 @@ function afeGuidePreset()
       oiiiGreenGain: 0.140, oiiiBlueGain: 0.180, strength: 1,
       smoothRGB: false, limitHighlights: false,
       mode: "enhance", makeMasks: true, reportEveryRows: 256,
-      exclusionMaskId: "",
+      exclusionMaskId: "", autoExclusion: false, use8BitOutput: false,
       toneBlackR: 0, toneBlackG: 0, toneBlackB: 0,
       toneScaleR: 1, toneScaleG: 1, toneScaleB: 1,
       toneGammaR: 1, toneGammaG: 1, toneGammaB: 1,
@@ -193,6 +193,7 @@ function afeAdaptivePreset( a )
    c.oiiiBlueGain *= a.gainScale;
    c.smoothRGB = true; c.limitHighlights = true; c.makeMasks = false;
    c.selectionMode = "hybrid";
+   c.autoExclusion = true; c.use8BitOutput = false;
    return c;
 }
 // Apply the measured Veil editing transfer as a strength-scaled, image-aware style.
@@ -309,8 +310,9 @@ function afeSource( view )
       afeFail( "Source must have exactly three RGB channels" );
    return view.window;
 }
-function afeExclusion( sourceView, id )
+function afeExclusion( sourceView, id, allowAuto )
 {
+   if ( !id.length && !allowAuto ) return null;
    var maskId = id.length ? id : sourceView.id + "_Protect";
    var window = ImageWindow.windowById( maskId );
    if ( !window || window.isNull )
@@ -338,7 +340,9 @@ function afeLogParameters( c, a )
    console.writeln( "RGB smoothing=" + c.smoothRGB +
       "  shared highlight limit=" + c.limitHighlights +
       "  strength=" + c.strength.toFixed( 3 ) +
-      "  global tone=" + afeToneEnabled( c ) );
+      "  global tone=" + afeToneEnabled( c ) +
+      "  8-bit output=" + !!c.use8BitOutput +
+      "  auto exclusion=" + !!c.autoExclusion );
 }
 function afeToneEnabled( c )
 {
@@ -352,7 +356,10 @@ function afeRun( sourceWindow, c, a )
    afeValidate( c );
    var sourceView = sourceWindow.mainView, source = sourceView.image;
    var w = source.width, h = source.height, total = w*h;
-   var exclusion = afeExclusion( sourceView, c.exclusionMaskId );
+   var exclusion = afeExclusion( sourceView, c.exclusionMaskId, c.autoExclusion );
+   var use8BitOutput = !!c.use8BitOutput && c.mode === "enhance" && !c.preview;
+   if ( use8BitOutput && source.bitsPerSample !== 8 )
+      afeFail( "8-bit reproduction output requires an 8-bit RGB source" );
    console.show(); console.abortEnabled = true;
    console.writeln( "Adaptive Faint Emission | " + sourceView.id +
       " | " + w + "x" + h + " | " + c.mode );
@@ -367,7 +374,8 @@ function afeRun( sourceWindow, c, a )
    var stamp = "AFE_" + (new Date()).getTime();
    var result = null, masks = [], begun = [], completed = false;
    var countProtected = 0, countPotential = 0, countMasked = 0;
-   var countChanged = 0, countClipped = 0, countLimited = 0, countToneClipped = 0;
+   var countChanged = 0, countChanged8 = 0, maxByteDelta = 0;
+   var countClipped = 0, countLimited = 0, countToneClipped = 0;
    var toneEnabled = afeToneEnabled( c );
    var sumEmission = 0, maxEmission = 0, maxDelta = 0, maxProtectedDelta = 0;
    try
@@ -376,7 +384,10 @@ function afeRun( sourceWindow, c, a )
          masks.push( afeWindow( w, h, 1, stamp + "_" + names[m] ) );
       if ( doResult )
       {
-         result = afeWindow( w, h, 3, stamp + (c.preview ? "_preview" : "_result") );
+         var outputId = stamp + (c.preview ? "_preview" : "_result");
+         result = use8BitOutput ?
+            new ImageWindow( w, h, 3, 8, false, true, outputId ) :
+            afeWindow( w, h, 3, outputId );
          result.keywords = sourceWindow.keywords;
          result.rgbWorkingSpace = sourceWindow.rgbWorkingSpace;
       }
@@ -510,6 +521,11 @@ function afeRun( sourceWindow, c, a )
                   ng = afeClamp( toneG, 0, 1 );
                   nb = afeClamp( toneB, 0, 1 );
                }
+               // Restore original bright pixels after all faint-detail calculations.
+               if ( protectedPixel && !toneEnabled )
+               {
+                  nr = R; ng = G; nb = B;
+               }
                var delta = Math.max( Math.abs( nr-R ), Math.abs( ng-G ), Math.abs( nb-B ) );
                if ( delta > 1e-12 ) ++countChanged;
                if ( delta > maxDelta ) maxDelta = delta;
@@ -539,18 +555,33 @@ function afeRun( sourceWindow, c, a )
             result.mainView.image.setSamples( go, writeRect, 1 );
             result.mainView.image.setSamples( bo, writeRect, 2 );
             // The original guide audits 32-bit conversion of protected pixels.
-            if ( !c.limitHighlights && !toneEnabled )
+            if ( (!c.limitHighlights && !toneEnabled) || use8BitOutput )
             {
                var outR = [], outG = [], outB = [];
                result.mainView.image.getSamples( outR, writeRect, 0 );
                result.mainView.image.getSamples( outG, writeRect, 1 );
                result.mainView.image.getSamples( outB, writeRect, 2 );
                for ( var pi = 0; pi < n; ++pi )
-                  if ( pflags[pi] )
+               {
+                  if ( pflags[pi] && !c.limitHighlights && !toneEnabled )
                      maxProtectedDelta = Math.max( maxProtectedDelta,
                         Math.abs( outR[pi]-ro[pi] ),
                         Math.abs( outG[pi]-go[pi] ),
                         Math.abs( outB[pi]-bo[pi] ) );
+                  if ( use8BitOutput )
+                  {
+                     var sourceIndex = (Math.floor( pi/w )+y0-readY0)*w+pi%w;
+                     var dr = Math.abs( Math.round( 255*outR[pi] )-
+                                        Math.round( 255*r[sourceIndex] ) );
+                     var dg = Math.abs( Math.round( 255*outG[pi] )-
+                                        Math.round( 255*g[sourceIndex] ) );
+                     var db = Math.abs( Math.round( 255*outB[pi] )-
+                                        Math.round( 255*b[sourceIndex] ) );
+                     var byteDelta = Math.max( dr, dg, db );
+                     if ( byteDelta > 0 ) ++countChanged8;
+                     if ( byteDelta > maxByteDelta ) maxByteDelta = byteDelta;
+                  }
+               }
             }
          }
          if ( c.reportEveryRows > 0 &&
@@ -580,6 +611,9 @@ function afeRun( sourceWindow, c, a )
    console.writeln( "Max/mean emission=" + maxEmission.toFixed( 6 ) +
       "/" + (sumEmission/total).toFixed( 8 ) +
       "  max RGB change=" + maxDelta.toFixed( 8 ) );
+   if ( use8BitOutput )
+      console.writeln( "8-bit changed=" + countChanged8 + " (" +
+         afePct( countChanged8, total ) + ")  max channel step=" + maxByteDelta );
    console.writeln( "Potential gain clipping=" + countClipped +
       "  highlight-limited=" + countLimited +
       "  tone-clipped=" + countToneClipped );
@@ -596,7 +630,8 @@ function afeRun( sourceWindow, c, a )
    if ( result && !c.preview ) result.show();
    console.writeln( "Done. Source image unchanged." );
    return { total: total, protectedCount: countProtected, faintCount: countPotential,
-      maskedCount: countMasked, changedCount: countChanged, clippedCount: countClipped, toneClippedCount: countToneClipped,
+      maskedCount: countMasked, changedCount: countChanged, changed8Count: countChanged8,
+      maxByteDelta: maxByteDelta, clippedCount: countClipped, toneClippedCount: countToneClipped,
       maxEmission: maxEmission, meanEmission: sumEmission/total, maxDelta: maxDelta,
       resultWindow: result };
 }
@@ -650,7 +685,8 @@ function afeRenderPreview( selection )
    var sourceWindow = selection.sourceWindow;
    var source = null, mask = null, result = null;
    var originalMask = afeExclusion( sourceWindow.mainView,
-                                    selection.config.exclusionMaskId );
+                                    selection.config.exclusionMaskId,
+                                    selection.config.autoExclusion );
    var stamp = "AFE_tmp_" + (new Date()).getTime();
    try
    {
@@ -665,6 +701,7 @@ function afeRenderPreview( selection )
       for ( var key in selection.config )
          if ( selection.config.hasOwnProperty( key ) ) c[key] = selection.config[key];
       c.mode = "enhance"; c.makeMasks = false; c.preview = true;
+      c.use8BitOutput = false; c.autoExclusion = false;
       c.reportEveryRows = 0;
       c.exclusionMaskId = mask ? mask.mainView.id : "";
       result = afeRun( source, c, selection.analysis ).resultWindow;
@@ -700,7 +737,15 @@ function afeLoadState()
          defaults.makeMasks = !!saved.makeMasks;
          if ( saved.reportEveryRows >= 0 && saved.reportEveryRows <= 4096 )
             defaults.reportEveryRows = saved.reportEveryRows;
-         if ( saved.custom ) defaults.custom = saved.custom;
+         if ( saved.custom )
+         {
+            // Preserve Custom behavior saved by GUI_v4 before these switches existed.
+            if ( typeof saved.custom.autoExclusion === "undefined" )
+               saved.custom.autoExclusion = true;
+            if ( typeof saved.custom.use8BitOutput === "undefined" )
+               saved.custom.use8BitOutput = false;
+            defaults.custom = saved.custom;
+         }
       }
    }
    catch ( ignored ) { /* damaged saved settings: use defaults */ }
@@ -956,6 +1001,13 @@ function AFEDialog()
    this.smoothCheck = new CheckBox( output );
    this.smoothCheck.text = "3×3 RGB smoothing for color selection";
    output.sizer.add( this.smoothCheck );
+   this.autoExclusionCheck = new CheckBox( output );
+   this.autoExclusionCheck.text = "Auto-detect <SourceViewId>_Protect";
+   output.sizer.add( this.autoExclusionCheck );
+   this.eightBitCheck = new CheckBox( output );
+   this.eightBitCheck.text = "8-bit RGB output for exact PNG reproduction";
+   this.eightBitCheck.toolTip = "Requires an 8-bit source; reports pixels changed after rounding.";
+   output.sizer.add( this.eightBitCheck );
    this.headroomCheck = new CheckBox( output );
    this.headroomCheck.text = "Protect highlight headroom";
    output.sizer.add( this.headroomCheck );
@@ -1045,6 +1097,8 @@ function AFEDialog()
    };
    this.smoothCheck.onCheck = function() { if ( !dialog.updating ) dialog.markCustom(); };
    this.headroomCheck.onCheck = function() { if ( !dialog.updating ) dialog.markCustom(); };
+   this.autoExclusionCheck.onCheck = function() { if ( !dialog.updating ) dialog.markCustom(); };
+   this.eightBitCheck.onCheck = function() { if ( !dialog.updating ) dialog.markCustom(); };
    this.selectionCombo.onItemSelected = function() { if ( !dialog.updating ) dialog.markCustom(); };
    try { this.applyPreset( this.state.preset ); }
    catch ( e )
@@ -1062,6 +1116,8 @@ AFEDialog.prototype.setFields = function( c )
       this.fields[AFE_FIELDS[i]].setValue( c[AFE_FIELDS[i]] );
    this.smoothCheck.checked = !!c.smoothRGB;
    this.headroomCheck.checked = !!c.limitHighlights;
+   this.autoExclusionCheck.checked = !!c.autoExclusion;
+   this.eightBitCheck.checked = !!c.use8BitOutput;
    this.currentSelectionMode = c.selectionMode || "emission";
    this.selectionCombo.currentItem = { hybrid: 0, emission: 1, luminance: 2 }[this.currentSelectionMode];
    this.syncQuick(); this.updating = false;
@@ -1101,6 +1157,8 @@ AFEDialog.prototype.readFields = function()
       c[AFE_FIELDS[i]] = this.fields[AFE_FIELDS[i]].value;
    c.smoothRGB = this.smoothCheck.checked;
    c.limitHighlights = this.headroomCheck.checked;
+   c.autoExclusion = this.autoExclusionCheck.checked;
+   c.use8BitOutput = this.eightBitCheck.checked;
    c.selectionMode = [ "hybrid", "emission", "luminance" ][this.selectionCombo.currentItem];
    return c;
 };
@@ -1131,6 +1189,8 @@ AFEDialog.prototype.applyPreset = function( index )
    var c = index === 6 ? (this.state.custom || this.readFields()) :
            index === 5 ? afeGuidePreset() :
            afeCategoryPreset( index, this.analyze( false ) );
+   if ( index === 5 && this.sourceView && this.sourceView.image &&
+        this.sourceView.image.bitsPerSample === 8 ) c.use8BitOutput = true;
    this.setFields( c );
    this.configSourceId = this.sourceView ? this.sourceView.id : "";
    this.updating = true;
@@ -1151,7 +1211,10 @@ AFEDialog.prototype.collect = function()
    c.exclusionMaskId = this.exclusionEdit.text.trim();
    c.preview = false;
    afeValidate( c );
-   afeExclusion( sourceWindow.mainView, c.exclusionMaskId );
+   afeExclusion( sourceWindow.mainView, c.exclusionMaskId, c.autoExclusion );
+   if ( c.use8BitOutput && c.mode === "enhance" &&
+        sourceWindow.mainView.image.bitsPerSample !== 8 )
+      afeFail( "8-bit reproduction output requires an 8-bit RGB source" );
    return { sourceWindow: sourceWindow, config: c, analysis: a };
 };
 function afeMain()
