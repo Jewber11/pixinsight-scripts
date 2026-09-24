@@ -32,5 +32,5 @@ This script appears under `Sam's Scripts > Automatic Subframe Cull`.
 ## Adaptive Faint Emission
 
 Activate an RGB image and run `Script > Sam's Scripts > Adaptive Faint Emission`.
-The GUI offers Adaptive, Exact Guide, Veil target look, and Custom recipes with analyze, mask, and enhance operations.
+The compact GUI offers Auto, nebula/remnant, galaxy, broadband/reflection, Veil style, Exact Guide, and Custom presets. It includes downscaled before/after preview, tone/color sliders, analyze, mask, and full-resolution enhance operations.
 See [usage and limits](adaptive_faint_emission/README.md).

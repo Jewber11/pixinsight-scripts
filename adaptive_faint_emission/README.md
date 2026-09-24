@@ -1,58 +1,65 @@
 # Adaptive Faint Emission
 
-Open an RGB image in PixInsight and run **Script → Sam's Scripts → Adaptive Faint Emission**. The GUI selects the source, recipe, operation, optional exclusion mask, thresholds, gains, and tone controls. It leaves the source unchanged and remembers recipe, operation, diagnostic-mask choice, progress interval, and custom values.
+Enhance faint detail in an open RGB image with **Script → Sam's Scripts → Adaptive Faint Emission**. Select the source, choose a subject, inspect the before/after preview, adjust sliders, then run at full resolution. The source is unchanged. The script creates a 32-bit floating-point RGB result and an emission/selection mask.
 
-| Operation | Result |
+## Quick workflow
+
+1. Open a **stretched RGB image** in PixInsight. Select it in the dialog. Image statistics are sampled automatically.
+2. Choose **Auto** for a balanced starting point, or choose a subject below. The mask thresholds, gains, and tone/color defaults are recomputed from source pixels.
+3. Click **Preview**. It samples the original into an RGB image with a long edge of at most 1200 pixels, runs the same enhancement math, and shows before/after inside the dialog. No permanent preview windows remain.
+4. Adjust **Faint detail**, **Shadows**, **Highlights**, **Midtone curve**, and **Color** sliders; click Preview again. Changing a slider switches to Custom and preserves the selected subject's mask behavior.
+5. Click **Enhance full image**. The preview is approximate: sparse averaging and a different scale can change how tiny stars, noise, and filaments are selected.
+
+The **Tone + color** tab offers sliders for individual red, green, and blue black points, scales, and midtone curves, plus saturation. The **Masks + gains** tab exposes precise threshold/gain values and lets you select Hybrid, Emission, or Luminance masking. The **Output** tab offers analyze-only and seven-mask modes, an exclusion mask, RGB smoothing, highlight protection, and progress interval. The dialog remembers the selected subject, operation, mask option, and Custom parameters.
+
+## Subjects and automatic values
+
+| Subject | Starting behavior |
 |---|---|
-| **Enhance** | Analyze image, compute mask, create a 32-bit floating-point RGB result and an emission mask. Enable seven diagnostic masks if wanted. |
-| **Analyze** | Report sampled luminance and full-image coverage; optionally create masks. |
-| **Masks** | Create all seven masks and a predicted change map, without an RGB result. |
+| **Auto** | Hybrid faint-luminance and red/cyan color selection; mild neutral tone. No claim of automatic semantic classification. |
+| **Emission nebula / supernova remnant** | Red/cyan selection with Hα/OIII-like color gains; moderate image-derived tone. |
+| **Galaxy** | Luminance selection for faint arms, dust, and halo. Color line gains are zero. |
+| **Broadband / reflection** | Hybrid luminance/color selection with restrained color gains. |
+| **Veil reference style** | Stronger overall tone and color modeled from the supplied original/edited Veil pair and adapted to the selected image's RGB quantiles. |
+| **Exact Guide** | Every pointwise equation and default threshold/gain from the supplied Veil guide, with raw RGB selection and neutral tone. |
+| **Custom** | Keeps current mask behavior and lets all controls be tuned. |
 
-**Analyze Source** refreshes image statistics and, in Adaptive mode, the displayed derived parameters. Changing any numeric mask, gain, or tone value switches to **Custom**. Select the original source view in the GUI for each run.
+Luminance band, bright protection, chroma and red/cyan gates, and gain scale are derived from up to 60,000 spatial image samples. For tone, each channel's 5th, 50th, and 95th percentiles adjust the measured Veil color technique. Presets use 3×3 RGB averaging for noise-resistant color selection and limit gain near white. Exact Guide retains original raw-pixel formulas. Image content cannot reliably identify a galaxy or nebula by statistics alone; choose the subject when Auto does not fit.
 
-## Recipes
+The image should already be stretched. Linear source images need a normal PixInsight stretch and noise workflow first; the automatic tone transfer is not a substitute for those steps. Red/cyan gates are color proxies, not calibrated Hα/OIII measurements. Preview before/after uses the source display transformation, when available, for a fair comparison.
 
-- **Adaptive** derives the faint band, bright protection, chroma and red/cyan gates, and gain scale from the current image. It uses 3×3 RGB averaging to reduce isolated color noise and limits gains near white. Use this for other RGB images.
-- **Exact Guide** implements every pointwise equation and default value from the supplied `VeilFaintEmission_Guide.md`: original-pixel luminance and RGB color gates, smooth faint and emission masks, the five multiplicative gains, `strength`, clipping, and optional exclusion. It has no spatial averaging or global tone. All seven masks are enabled by default. Use an already stretched RGB image for this preset.
-- **Veil target look** combines Adaptive with an optional global RGB tone fitted to the supplied original and edited TIFFs. It is an **approximation** for that Veil image; it is not the guide's exact recipe and may not suit other images.
-- **Custom** exposes all eight mask thresholds, five gains, overall strength, RGB smoothing, highlight limiting, three black points, three scales, three gammas, and saturation. No script editing is needed.
+## Guide formula and diagnostic masks
 
-The guide's luminance is `Y = 0.2126R + 0.7152G + 0.0722B` on stored RGB samples. Its faint gate is `S(faintStart,faintFull,Y) × [1 − S(faintFade,protectFrom,Y)]`. Chroma is `max(R,G,B) − min(R,G,B)`. The red/cyan selections use `R − (G+B)/2` and its negative with the faint and chroma gates. Gains use the original RGB channels. The script uses tiled PJSR reads and writes rather than per-pixel image API calls.
-
-Global tone is neutral in Adaptive and Exact Guide. When enabled in Veil target look or Custom, it subtracts per-channel black points, scales, applies per-channel gamma, then adjusts saturation. This changes **all** pixels, including those protected from faint-emission gains. It is separate from the guide's faint-only formula.
-
-## Diagnostic images
+The guide luminance is `Y = 0.2126R + 0.7152G + 0.0722B`. Its faint gate is `S(faintStart,faintFull,Y) × [1 − S(faintFade,protectFrom,Y)]`. Chroma is `max(R,G,B) − min(R,G,B)`. The red/cyan selections use `R − (G+B)/2` and its negative. Guide gains multiply the original RGB channels. Exact Guide applies these equations without global tone and creates all seven masks by default.
 
 | Suffix | Meaning |
 |---|---|
 | `_Faint` | Original-luminance faint gate. |
 | `_ColorGate` | RGB chroma gate. |
-| `_Ha` | Faint reddish selection. |
-| `_Oiii` | Faint cyan selection. |
-| `_Emission` | Maximum of red and cyan selections. |
-| `_Protected` | White where source luminance reaches the protection threshold; elsewhere the optional exclusion value. Protection applies to faint-emission gains. |
-| `_Change` | Maximum absolute predicted RGB channel change, including optional global tone. |
+| `_Ha` | Reddish selection. |
+| `_Oiii` | Cyan selection. |
+| `_Emission` | Effective enhancement selection. In Galaxy mode this is luminance-based. |
+| `_Protected` | Bright protection plus optional exclusion. |
+| `_Change` | Maximum predicted RGB channel change, including global tone. |
 
-A mask can appear dark while nonzero. Use PixInsight's STF for display only. The console reports p01/p50/p99 luminance, thresholds, protected, masked, and changed fractions, gain clipping candidates, tone clipping, and protected-pixel float conversion difference in Exact Guide output.
+**Analyze** reports image statistics and coverage; **Masks** creates seven diagnostics without RGB output. Normal Enhance creates one selection mask. Turn on seven-mask output to inspect every component. Use PixInsight's STF to display dark masks. The full-resolution engine reads and writes tiles instead of using per-pixel image APIs.
 
-## Whole-region exclusion
+## Tone, color, and supplied Veil target
 
-Create an open grayscale image of the same dimensions: white over areas to preserve from faint-emission gains, black elsewhere, gray for partial protection. Enter its view ID under **Exclusion mask ID**. If empty, the script automatically looks for `<SourceViewId>_Protect`. This handles dark gaps inside a bright complex that per-pixel luminance protection cannot cover. Global tone, when enabled, still changes these pixels.
+Global tone subtracts individual RGB black points, multiplies channel scales, applies channel power curves, then adjusts saturation. The tone sliders set these parameters directly. The quick sliders change their shared average while retaining relative RGB differences. Global tone affects bright pixels even when faint-detail gains are protected.
 
-## Supplied Veil original and target
+The supplied `final_print_test.tif` is **8183×12262**; `Veil_selected_faint_Ha_OIII_print_master.tif` is **1024×1536**. Exact Guide changes little on the original because its fixed protection threshold is too low for this stretched source. The target also contains resize and spatial/detail edits outside the guide's equations. The Veil reference preset models its **global** color/tone technique; it cannot recreate every target pixel or infer unseen local edits on arbitrary images. In PixInsight on a matched-size copy, sampled normalized RGB mean absolute error fell from **0.0963** to **0.0695**. The script keeps the source's native dimensions for full output.
 
-`final_print_test.tif` is **8183×12262**. `Veil_selected_faint_Ha_OIII_print_master.tif` is **1024×1536**. About **99.8%** of pixels in a downsized copy of the original exceed the guide's fixed `protectFrom = 0.160`; Exact Guide therefore changes almost nothing on this source. The target also has broad contrast and color changes outside the guide's equations. Exact Guide **cannot** regenerate the supplied target.
+For whole-region protection, open a same-size grayscale image, white where faint-detail gains should be blocked. Enter its view ID under **Exclusion mask ID**, or name it `<SourceViewId>_Protect` for automatic detection. Preview downsamples this exclusion mask too. Global tone still affects excluded areas.
 
-The Veil target look preset reduces mean absolute RGB error against the supplied target from **0.100 to 0.071** in a PixInsight test on a matched-size copy of the original (normalized values). It remains visibly different: local detail and the resize cannot be recovered from the guide. The script preserves the source's native dimensions; resize separately when needed. Use Adaptive for other images and inspect masks before saving.
-
-Red/cyan selections are color proxies, not calibrated Hα/OIII line measurements. Colorful sky noise can still pass. Save the result as **32-bit floating-point XISF**. The output copies source FITS keywords and RGB working space, but not an embedded TIFF ICC profile; assign or check the intended profile before print export.
+Save full results as **32-bit floating-point XISF**. The output copies source FITS keywords and RGB working space, but not an embedded TIFF ICC profile; check the intended print profile before export.
 
 ## Installation
 
-The published repository URL is:
+Add the repository URL under **Resources → Updates → Manage Repositories → Add**; check for updates, apply, and restart:
 
 ```text
 https://raw.githubusercontent.com/Jewber11/pixinsight-scripts/main/pixinsight-repository/
 ```
 
-In PixInsight choose **Resources → Updates → Manage Repositories → Add**, enter the URL, check for updates, apply, and restart. For immediate local use choose **Script → Execute Script File...** and open `AdaptiveFaintEmission.js`. The [main README](../README.md) describes repository packaging.
+For immediate local use choose **Script → Execute Script File...** and open `AdaptiveFaintEmission.js`.
