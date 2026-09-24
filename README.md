@@ -28,3 +28,9 @@ Keep the trailing `/`. In PixInsight use:
 
 Every script needs a `#feature-id` directive to appear in the Script menu.
 This script appears under `Sam's Scripts > Automatic Subframe Cull`.
+
+## Adaptive Faint Emission
+
+Activate an RGB image and run `Script > Sam's Scripts > Adaptive Faint Emission`.
+The script analyzes the image, builds a faint-emission mask, and enhances it in one run.
+See [usage and limits](adaptive_faint_emission/README.md).
