@@ -32,5 +32,5 @@ This script appears under `Sam's Scripts > Automatic Subframe Cull`.
 ## Adaptive Faint Emission
 
 Activate an RGB image and run `Script > Sam's Scripts > Adaptive Faint Emission`.
-The script analyzes the image, builds a faint-emission mask, and enhances it in one run.
+The GUI offers Adaptive, Exact Guide, Veil target look, and Custom recipes with analyze, mask, and enhance operations.
 See [usage and limits](adaptive_faint_emission/README.md).
