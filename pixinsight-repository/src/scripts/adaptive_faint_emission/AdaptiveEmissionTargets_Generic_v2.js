@@ -6,7 +6,7 @@
 #include <pjsr/StdButton.jsh>
 
 #feature-id    Sam's Scripts > Adaptive Faint Emission
-#feature-info  Subject presets, exact 8-bit guide, image-derived tone, sliders, and preview.
+#feature-info  Emission-only adaptive faint-nebulosity enhancement for stretched RGB astrophotography.
 
 /*
  * Adaptive Faint Emission for PixInsight/PJSR.
@@ -14,8 +14,9 @@
  * The red/cyan selections are color proxies, not calibrated H-alpha/OIII flux.
  */
 
-var AFE_MAX_ANALYSIS_SAMPLES = 60000;
-var AFE_TILE_PIXELS = 300000;
+var AFE_MAX_ANALYSIS_SAMPLES = 120000;
+var AFE_TILE_PIXELS = 450000;
+var AFE_PREVIEW_SUFFIX = "_AFEPreview";
 
 function afeFail( message ) { throw new Error( message ); }
 function afeClamp( x, a, b ) { return Math.max( a, Math.min( b, x ) ); }
@@ -37,7 +38,10 @@ function afeSampleAnalysis( image )
    var w = image.width, h = image.height;
    var stride = Math.max( 1, Math.ceil( Math.sqrt( w*h/AFE_MAX_ANALYSIS_SAMPLES ) ) );
    var ys = [], cs = [], ds = [], channel = [ [], [], [] ];
+   var bgChannel = [ [], [], [] ];
    var rows = [ [], [], [], [], [], [], [], [], [] ];
+   var redStrength = 0, cyanStrength = 0;
+   var redCount = 0, cyanCount = 0;
    var y0 = Math.min( h-1, Math.floor( stride/2 ) );
    for ( var y = y0; y < h; y += stride )
    {
@@ -62,12 +66,23 @@ function afeSampleAnalysis( image )
             }
             sm[ch] /= 9;
          }
+         var signed = sm[0] - 0.5*(sm[1]+sm[2]);
          ys.push( yv );
          channel[0].push( rows[1][x] );
          channel[1].push( rows[4][x] );
          channel[2].push( rows[7][x] );
          cs.push( Math.max( sm[0], sm[1], sm[2] ) - Math.min( sm[0], sm[1], sm[2] ) );
-         ds.push( Math.abs( sm[0] - 0.5*(sm[1]+sm[2]) ) );
+         ds.push( Math.abs( signed ) );
+         if ( signed > 0 )
+         {
+            redStrength += signed;
+            ++redCount;
+         }
+         else if ( signed < 0 )
+         {
+            cyanStrength += -signed;
+            ++cyanCount;
+         }
       }
       if ( (y-y0) % (stride*64) === 0 )
       {
@@ -83,69 +98,94 @@ function afeSampleAnalysis( image )
    var channelQ = [];
    for ( var ch = 0; ch < 3; ++ch )
    {
-      var orderedChannel = afeSorted( channel[ch] );
+      var orderedChannel = afeSorted( channel[ch].slice( 0 ) );
       channelQ.push( { p05: afeQuantile( orderedChannel, 0.05 ),
          p50: afeQuantile( orderedChannel, 0.50 ),
          p95: afeQuantile( orderedChannel, 0.95 ) } );
    }
-   var backgroundC = [], backgroundD = [];
+
    var skyLimit = afeQuantile( orderedY, 0.45 );
+   var backgroundC = [], backgroundD = [];
    for ( var i = 0; i < ys.length; ++i )
       if ( ys[i] <= skyLimit )
       {
          backgroundC.push( cs[i] );
          backgroundD.push( ds[i] );
+         for ( var ch2 = 0; ch2 < 3; ++ch2 )
+            bgChannel[ch2].push( channel[ch2][i] );
       }
+   if ( backgroundC.length < 32 )
+   {
+      backgroundC = orderedC.slice( 0, Math.max( 32, Math.floor( 0.45*orderedC.length ) ) );
+      backgroundD = orderedD.slice( 0, Math.max( 32, Math.floor( 0.45*orderedD.length ) ) );
+      for ( var ch3 = 0; ch3 < 3; ++ch3 )
+         bgChannel[ch3] = channel[ch3].slice( 0, Math.max( 32, Math.floor( 0.45*channel[ch3].length ) ) );
+   }
    afeSorted( backgroundC );
    afeSorted( backgroundD );
+   var bgChannelQ = [];
+   for ( var bc = 0; bc < 3; ++bc )
+   {
+      var orderedBg = afeSorted( bgChannel[bc].slice( 0 ) );
+      bgChannelQ.push( { p05: afeQuantile( orderedBg, 0.05 ),
+         p50: afeQuantile( orderedBg, 0.50 ),
+         p95: afeQuantile( orderedBg, 0.95 ) } );
+   }
 
+   var l01 = afeQuantile( orderedY, 0.01 );
    var l05 = afeQuantile( orderedY, 0.05 );
+   var l20 = afeQuantile( orderedY, 0.20 );
    var l25 = afeQuantile( orderedY, 0.25 );
-   var l50 = afeQuantile( orderedY, 0.50 );
    var l35 = afeQuantile( orderedY, 0.35 );
+   var l50 = afeQuantile( orderedY, 0.50 );
+   var l55 = afeQuantile( orderedY, 0.55 );
    var l65 = afeQuantile( orderedY, 0.65 );
    var l75 = afeQuantile( orderedY, 0.75 );
-   var l90 = afeQuantile( orderedY, 0.90 );
-   var l999 = afeQuantile( orderedY, 0.999 );
+   var l88 = afeQuantile( orderedY, 0.88 );
    var l95 = afeQuantile( orderedY, 0.95 );
-   var l01 = afeQuantile( orderedY, 0.01 );
    var l99 = afeQuantile( orderedY, 0.99 );
+   var l999 = afeQuantile( orderedY, 0.999 );
    var skySpread = Math.max( l75-l25, 1e-6 );
    var tail = Math.max( 0, l999-l50 );
-   var broadField = skySpread > Math.max( 1e-4, 0.15*(l999-l05) );
-   var brightTail = tail > Math.max( 12*skySpread, Math.min( 4*l50, 0.15 ) );
+   var diffuseFactor = afeClamp( (l75-l25)/Math.max( l95-l05, 1e-6 ), 0, 1 );
+   var broadField = diffuseFactor > 0.22;
+   var brightTail = tail > Math.max( 10*skySpread, Math.min( 3.0*l50, 0.12 ) );
    var le = Math.max( 1e-6, 0.01*skySpread );
-   var faintStart = afeClamp( broadField ? l05 : l50+skySpread, 0, 1-3*le );
-   var faintFull = afeClamp( Math.max( broadField ? l35 : l50+2.5*skySpread,
-                                     faintStart+le ), faintStart+le, 1-2*le );
-   // Broad fields use image quantiles; sparse fields use the bright tail.
-   var fadeCandidate = broadField ? l65 :
-                       (brightTail ? l50+0.25*tail : l50+0.85*tail);
-   var protectCandidate = broadField ? l90 :
-                          (brightTail ? l50+0.45*tail : l999+4*skySpread);
-   var faintFade = afeClamp( Math.max( fadeCandidate, faintFull+le ),
-                              faintFull+le, 1-le );
-   var protectFrom = afeClamp( Math.max( protectCandidate, faintFade+le ),
-                                 faintFade+le, 1 );
 
-   var cStart = afeClamp( afeQuantile( backgroundC, 0.80 ), 0, 1-1e-6 );
-   var cFull = afeClamp( Math.max( afeQuantile( backgroundC, 0.98 ),
-                                    afeQuantile( orderedC, 0.75 ), cStart+1e-6 ),
-                          cStart+1e-6, 1 );
-   var dStart = afeClamp( afeQuantile( backgroundD, 0.80 ), 0, 1-1e-6 );
-   var dFull = afeClamp( Math.max( afeQuantile( backgroundD, 0.98 ),
-                                    afeQuantile( orderedD, 0.75 ), dStart+1e-6 ),
-                          dStart+1e-6, 1 );
-   // Baseline artistic gains scale down as highlight occupancy increases.
-   var gainScale = afeClamp( 1.15-0.6*l95, 0.65, 1.15 );
+   var faintStart = afeClamp( broadField ? l05 : l20, 0, 1-3*le );
+   var faintFull = afeClamp( Math.max( broadField ? l20 : l35, faintStart+le ), faintStart+le, 1-2*le );
+   var fadeCandidate = broadField ? l55 : (brightTail ? l65 : l75);
+   var protectCandidate = broadField ? l88 : (brightTail ? l95 : l99);
+   var faintFade = afeClamp( Math.max( fadeCandidate, faintFull+le ), faintFull+le, 1-le );
+   var protectFrom = afeClamp( Math.max( protectCandidate, faintFade+le ), faintFade+le, 1 );
+
+   var c50 = afeQuantile( backgroundC, 0.50 );
+   var c84 = afeQuantile( backgroundC, 0.84 );
+   var c98 = afeQuantile( backgroundC, 0.98 );
+   var d50 = afeQuantile( backgroundD, 0.50 );
+   var d84 = afeQuantile( backgroundD, 0.84 );
+   var d98 = afeQuantile( backgroundD, 0.98 );
+   var cNoise = Math.max( c84-c50, 1e-6 );
+   var dNoise = Math.max( d84-d50, 1e-6 );
+
+   var cFull = afeClamp( Math.max( c98, afeQuantile( orderedC, 0.60 ), c50+2.5*cNoise ), 1e-6, 0.25 );
+   var dFull = afeClamp( Math.max( d98, 0.60*afeQuantile( orderedD, 0.60 ), d50+2.0*dNoise ), 1e-6, 0.12 );
+
+   var biasDen = Math.max( redStrength+cyanStrength, 1e-9 );
+   var redBias = redStrength/biasDen;
+   var cyanBias = cyanStrength/biasDen;
+   var gainScale = afeClamp( 1.10-0.55*l95, 0.60, 1.20 );
+
    return {
       sampleCount: ys.length, p01: l01, p05: l05, p50: l50,
       p95: l95, p99: l99, faintStart: faintStart, faintFull: faintFull,
       faintFade: faintFade, protectFrom: protectFrom,
-      chromaStart: cStart, chromaFull: cFull,
-      emissionStart: dStart, emissionFull: dFull,
+      chromaStart: 0, chromaFull: cFull,
+      emissionStart: 0, emissionFull: dFull,
       gainScale: gainScale, brightTail: brightTail, broadField: broadField,
-      channelQ: channelQ
+      diffuseFactor: diffuseFactor, channelQ: channelQ, bgChannelQ: bgChannelQ,
+      redBias: redBias, cyanBias: cyanBias,
+      backgroundChromaMedian: c50, backgroundExcessMedian: d50
    };
 }
 
@@ -167,106 +207,145 @@ var AFE_FIELDS = [
 function afeGuidePreset()
 {
    return {
-      faintStart: 0.018, faintFull: 0.045, faintFade: 0.085,
-      protectFrom: 0.160, chromaStart: 0.012, chromaFull: 0.070,
-      emissionStart: 0.006, emissionFull: 0.055,
-      generalGain: 0.220, haRedGain: 0.220, haBlueGain: 0.035,
-      oiiiGreenGain: 0.140, oiiiBlueGain: 0.180, strength: 1,
-      smoothRGB: false, limitHighlights: false,
-      mode: "enhance", makeMasks: true, reportEveryRows: 256,
+      faintStart: 0.020, faintFull: 0.060, faintFade: 0.120,
+      protectFrom: 0.300, chromaStart: 0.000, chromaFull: 0.040,
+      emissionStart: 0.000, emissionFull: 0.008,
+      generalGain: 0.080, haRedGain: 0.180, haBlueGain: 0.020,
+      oiiiGreenGain: 0.080, oiiiBlueGain: 0.140, strength: 1,
+      smoothRGB: true, limitHighlights: true,
+      mode: "enhance", makeMasks: false, reportEveryRows: 256,
       exclusionMaskId: "", autoExclusion: false, use8BitOutput: false,
-      toneBlackR: 0, toneBlackG: 0, toneBlackB: 0,
-      toneScaleR: 1, toneScaleG: 1, toneScaleB: 1,
-      toneGammaR: 1, toneGammaG: 1, toneGammaB: 1,
-      toneSaturation: 1, selectionMode: "emission", preview: false
+      toneBlackR: 0.040, toneBlackG: 0.020, toneBlackB: 0.020,
+      toneScaleR: 1.12, toneScaleG: 1.16, toneScaleB: 1.18,
+      toneGammaR: 1.02, toneGammaG: 1.22, toneGammaB: 1.26,
+      toneSaturation: 1.10, selectionMode: "emission", preview: false,
+      outputId: ""
    };
 }
 function afeAdaptivePreset( a )
 {
    var c = afeGuidePreset();
-   c.faintStart = a.faintStart; c.faintFull = a.faintFull;
-   c.faintFade = a.faintFade; c.protectFrom = a.protectFrom;
-   c.chromaStart = a.chromaStart; c.chromaFull = a.chromaFull;
-   c.emissionStart = a.emissionStart; c.emissionFull = a.emissionFull;
-   c.generalGain *= a.gainScale; c.haRedGain *= a.gainScale;
-   c.haBlueGain *= a.gainScale; c.oiiiGreenGain *= a.gainScale;
-   c.oiiiBlueGain *= a.gainScale;
-   c.smoothRGB = true; c.limitHighlights = true; c.makeMasks = false;
-   c.selectionMode = "hybrid";
-   c.autoExclusion = true; c.use8BitOutput = false;
+   c.faintStart = a.faintStart;
+   c.faintFull = a.faintFull;
+   c.faintFade = a.faintFade;
+   c.protectFrom = a.protectFrom;
+   c.chromaStart = 0;
+   c.chromaFull = a.chromaFull;
+   c.emissionStart = 0;
+   c.emissionFull = a.emissionFull;
+   c.generalGain = 0.070*a.gainScale;
+   c.haRedGain = 0.170*a.gainScale*(0.80+0.40*a.redBias);
+   c.haBlueGain = 0.020*a.gainScale*(0.80+0.40*a.redBias);
+   c.oiiiGreenGain = 0.075*a.gainScale*(0.80+0.40*a.cyanBias);
+   c.oiiiBlueGain = 0.135*a.gainScale*(0.80+0.40*a.cyanBias);
+   c.strength = 1;
+   c.smoothRGB = true;
+   c.limitHighlights = true;
+   c.makeMasks = false;
+   c.selectionMode = "emission";
+   c.autoExclusion = false;
+   c.use8BitOutput = false;
    return c;
 }
-// Apply the measured Veil editing transfer as a strength-scaled, image-aware style.
-// Reference quantiles come from the supplied original, at the target size.
-function afeAutoTone( c, a, amount, neutralColor )
+function afeAutoTone( c, a, profile )
 {
-   var ref05 = [ 0.192157, 0.188235, 0.192157 ];
-   var ref50 = [ 0.258824, 0.243137, 0.250980 ];
-   var ref95 = [ 0.549020, 0.537255, 0.545098 ];
-   var refBlack = [ 0.038826, 0, 0 ];
-   var refScale = [ 1.164268, 1.187431, 1.201743 ];
-   var refGamma = [ 1.006616, 1.508023, 1.506611 ];
    var suffix = [ "R", "G", "B" ];
    for ( var i = 0; i < 3; ++i )
    {
-      var q = a.channelQ[i], ch = suffix[i];
-      var lowRatio = afeClamp( q.p05/ref05[i], 0.25, 2.0 );
-      var highRatio = afeClamp( ref95[i]/Math.max( q.p95, 0.02 ), 0.7, 1.6 );
-      var midRatio = afeClamp( q.p50/ref50[i], 0.6, 1.5 );
-      var black = refBlack[i]*lowRatio;
-      var scale = refScale[i]*Math.pow( highRatio, 0.3 );
-      var gamma = refGamma[i]*Math.pow( midRatio, 0.2 );
-      if ( neutralColor )
-      {
-         black = 0.012*lowRatio;
-         scale = 1.18*Math.pow( highRatio, 0.3 );
-         gamma = 1.20*Math.pow( midRatio, 0.2 );
-      }
-      c["toneBlack"+ch] = afeClamp( amount*black, 0, 0.5 );
-      c["toneScale"+ch] = afeClamp( 1+amount*(scale-1), 0.2, 3 );
-      c["toneGamma"+ch] = afeClamp( 1+amount*(gamma-1), 0.2, 3 );
+      var q = a.channelQ[i], bg = a.bgChannelQ[i], ch = suffix[i];
+      var black = bg.p05 + profile.black*(bg.p50-bg.p05);
+      if ( i === 0 )
+         black *= 1+0.10*profile.aggression*a.redBias;
+      else
+         black *= 0.95+0.05*profile.aggression;
+      black = afeClamp( black, 0, Math.min( 0.35, q.p50*0.95 ) );
+
+      var highlightRoom = afeClamp( (0.92-q.p95)/0.45, 0, 1.20 );
+      var scale = 1+profile.scale*(0.35+0.85*highlightRoom);
+      if ( i === 0 ) scale *= 1+0.06*profile.aggression*a.redBias;
+      else scale *= 1+0.04*profile.aggression*a.cyanBias;
+      scale = afeClamp( scale, 0.70, 2.50 );
+
+      var bgFrac = afeClamp( (q.p50-bg.p50)/Math.max( q.p95-bg.p50, 1e-6 ), 0.05, 0.95 );
+      var gamma = i === 0 ?
+         0.98+profile.gamma*(0.02+0.10*bgFrac) :
+         1.00+profile.gamma*((i === 1 ? 0.26 : 0.30)+0.28*bgFrac);
+      gamma = afeClamp( gamma, 0.85, 2.20 );
+
+      c["toneBlack"+ch] = black;
+      c["toneScale"+ch] = scale;
+      c["toneGamma"+ch] = gamma;
    }
-   c.toneSaturation = 1+amount*(neutralColor ? 0.04 : 0.111571);
+   c.toneSaturation = afeClamp( 1+profile.saturation*(0.12+0.28*a.diffuseFactor), 1.00, 1.80 );
    return c;
 }
-function afeCategoryPreset( index, a )
+function afeEmissionPreset( index, a )
 {
-   var c = index === 5 ? afeGuidePreset() : afeAdaptivePreset( a );
-   if ( index === 0 ) // balanced: color and luminance both contribute
+   var c;
+   if ( index === 4 )
+      c = afeGuidePreset();
+   else
+      c = afeAdaptivePreset( a );
+
+   if ( index === 0 ) // balanced
    {
-      c.selectionMode = "hybrid";
-      afeAutoTone( c, a, 0.30, true );
+      c.generalGain = 0.070*a.gainScale;
+      c.haRedGain = 0.170*a.gainScale*(0.80+0.40*a.redBias);
+      c.haBlueGain = 0.020*a.gainScale;
+      c.oiiiGreenGain = 0.075*a.gainScale*(0.80+0.40*a.cyanBias);
+      c.oiiiBlueGain = 0.135*a.gainScale*(0.80+0.40*a.cyanBias);
+      afeAutoTone( c, a, { black: 0.58, scale: 0.32, gamma: 0.85, saturation: 0.75, aggression: 1.00 } );
    }
-   if ( index === 1 ) // emission nebula and supernova remnant
+   if ( index === 1 ) // aggressive faint emission
    {
-      c.selectionMode = "emission";
-      afeAutoTone( c, a, 0.45, false );
+      c.faintStart = afeClamp( a.faintStart*0.90, 0, a.faintFull-1e-6 );
+      c.faintFull = afeClamp( a.faintFull*0.93, c.faintStart+1e-6, a.faintFade-1e-6 );
+      c.chromaFull = afeClamp( a.chromaFull*0.85, 1e-6, 0.25 );
+      c.emissionFull = afeClamp( a.emissionFull*0.82, 1e-6, 0.12 );
+      c.generalGain = 0.100*a.gainScale;
+      c.haRedGain = 0.230*a.gainScale*(0.80+0.45*a.redBias);
+      c.haBlueGain = 0.030*a.gainScale;
+      c.oiiiGreenGain = 0.100*a.gainScale*(0.80+0.45*a.cyanBias);
+      c.oiiiBlueGain = 0.170*a.gainScale*(0.80+0.45*a.cyanBias);
+      afeAutoTone( c, a, { black: 0.72, scale: 0.44, gamma: 1.05, saturation: 0.95, aggression: 1.25 } );
    }
-   if ( index === 2 ) // broadband galaxy arms, dust and halo
+   if ( index === 2 ) // ultra-aggressive faint emission
    {
-      c.selectionMode = "luminance";
-      c.generalGain = 0.30*a.gainScale;
-      c.haRedGain = c.haBlueGain = c.oiiiGreenGain = c.oiiiBlueGain = 0;
-      afeAutoTone( c, a, 0.32, true );
+      c.faintStart = afeClamp( a.faintStart*0.82, 0, a.faintFull-1e-6 );
+      c.faintFull = afeClamp( a.faintFull*0.86, c.faintStart+1e-6, a.faintFade-1e-6 );
+      c.faintFade = afeClamp( a.faintFade*0.97, c.faintFull+1e-6, a.protectFrom-1e-6 );
+      c.chromaFull = afeClamp( a.chromaFull*0.72, 1e-6, 0.25 );
+      c.emissionFull = afeClamp( a.emissionFull*0.68, 1e-6, 0.12 );
+      c.generalGain = 0.125*a.gainScale;
+      c.haRedGain = 0.285*a.gainScale*(0.82+0.48*a.redBias);
+      c.haBlueGain = 0.040*a.gainScale;
+      c.oiiiGreenGain = 0.125*a.gainScale*(0.82+0.48*a.cyanBias);
+      c.oiiiBlueGain = 0.205*a.gainScale*(0.82+0.48*a.cyanBias);
+      afeAutoTone( c, a, { black: 0.84, scale: 0.56, gamma: 1.18, saturation: 1.10, aggression: 1.45 } );
    }
-   if ( index === 3 ) // reflection nebula / broadband dust
+   if ( index === 3 ) // conservative clean
    {
-      c.selectionMode = "hybrid";
-      c.generalGain = 0.25*a.gainScale;
-      c.haRedGain = 0.06*a.gainScale;
-      c.haBlueGain = 0.02*a.gainScale;
-      c.oiiiGreenGain = 0.04*a.gainScale;
-      c.oiiiBlueGain = 0.08*a.gainScale;
-      afeAutoTone( c, a, 0.36, true );
+      c.chromaFull = afeClamp( a.chromaFull*1.10, 1e-6, 0.25 );
+      c.emissionFull = afeClamp( a.emissionFull*1.12, 1e-6, 0.12 );
+      c.generalGain = 0.045*a.gainScale;
+      c.haRedGain = 0.120*a.gainScale*(0.85+0.30*a.redBias);
+      c.haBlueGain = 0.015*a.gainScale;
+      c.oiiiGreenGain = 0.055*a.gainScale*(0.85+0.30*a.cyanBias);
+      c.oiiiBlueGain = 0.095*a.gainScale*(0.85+0.30*a.cyanBias);
+      afeAutoTone( c, a, { black: 0.46, scale: 0.24, gamma: 0.65, saturation: 0.55, aggression: 0.80 } );
    }
-   if ( index === 4 ) // measured Veil color technique, image-adapted
+   if ( index === 4 ) // manual emission start point
    {
-      c.selectionMode = "emission";
-      afeAutoTone( c, a, 1, false );
+      afeAutoTone( c, a, { black: 0.52, scale: 0.28, gamma: 0.80, saturation: 0.65, aggression: 0.95 } );
    }
+   c.selectionMode = "emission";
+   c.smoothRGB = true;
+   c.limitHighlights = true;
+   c.autoExclusion = false;
+   c.use8BitOutput = false;
    return c;
 }
-function afeReferencePreset( a ) { return afeCategoryPreset( 4, a ); }
+function afeReferencePreset( a ) { return afeEmissionPreset( 0, a ); }
 function afeValidate( c )
 {
    if ( !(0 <= c.faintStart && c.faintStart < c.faintFull &&
@@ -294,8 +373,8 @@ function afeValidate( c )
          afeFail( AFE_FIELDS[gi] + " must be between 0.1 and 3" );
    if ( !isFinite( c.toneSaturation ) || c.toneSaturation < 0 || c.toneSaturation > 5 )
       afeFail( "Tone saturation must be between 0 and 5" );
-   if ( ["hybrid", "emission", "luminance"].indexOf( c.selectionMode ) < 0 )
-      afeFail( "Invalid selection mode" );
+   if ( c.selectionMode !== "emission" )
+      afeFail( "This build is dedicated to emission targets only" );
    if ( c.mode !== "analyze" && c.mode !== "masks" && c.mode !== "enhance" )
       afeFail( "Invalid operation" );
    if ( !isFinite( c.reportEveryRows ) || c.reportEveryRows < 0 )
@@ -341,7 +420,6 @@ function afeLogParameters( c, a )
       "  shared highlight limit=" + c.limitHighlights +
       "  strength=" + c.strength.toFixed( 3 ) +
       "  global tone=" + afeToneEnabled( c ) +
-      "  8-bit output=" + !!c.use8BitOutput +
       "  auto exclusion=" + !!c.autoExclusion );
 }
 function afeToneEnabled( c )
@@ -384,7 +462,8 @@ function afeRun( sourceWindow, c, a )
          masks.push( afeWindow( w, h, 1, stamp + "_" + names[m] ) );
       if ( doResult )
       {
-         var outputId = stamp + (c.preview ? "_preview" : "_result");
+         var outputId = c.outputId && c.outputId.length ? c.outputId :
+            stamp + (c.preview ? "_preview" : "_result");
          result = use8BitOutput ?
             new ImageWindow( w, h, 3, 8, false, true, outputId ) :
             afeWindow( w, h, 3, outputId );
@@ -470,10 +549,7 @@ function afeRun( sourceWindow, c, a )
                var commonMask = F*gate*(1-X);
                var H = d > 0 ? commonMask*afeSmooth( c.emissionStart, c.emissionFull, d ) : 0;
                var O = d < 0 ? commonMask*afeSmooth( c.emissionStart, c.emissionFull, -d ) : 0;
-               var E = c.selectionMode === "luminance" ? F*(1-X) :
-                       c.selectionMode === "hybrid" ?
-                          F*(1-X)*(0.35+0.65*Math.max( H, O )/Math.max( F*(1-X), 1e-9 )) :
-                          Math.max( H, O );
+               var E = Math.max( H, O );
                if ( E > 0 ) ++countMasked;
                sumEmission += E;
                if ( E > maxEmission ) maxEmission = E;
@@ -680,7 +756,7 @@ function afeDownsampleImage( image, maxEdge, id )
    }
    return window;
 }
-function afeRenderPreview( selection )
+function afeRenderThumbPreview( selection )
 {
    var sourceWindow = selection.sourceWindow;
    var source = null, mask = null, result = null;
@@ -718,6 +794,25 @@ function afeRenderPreview( selection )
       if ( source ) source.forceClose();
    }
 }
+function afeCloseWindowById( id )
+{
+   var w = ImageWindow.windowById( id );
+   if ( w && !w.isNull ) w.forceClose();
+}
+function afeCreateFullPreview( selection )
+{
+   var sourceWindow = selection.sourceWindow;
+   var c = {};
+   for ( var key in selection.config )
+      if ( selection.config.hasOwnProperty( key ) ) c[key] = selection.config[key];
+   c.mode = "enhance";
+   c.makeMasks = false;
+   c.preview = false;
+   c.outputId = sourceWindow.mainView.id + AFE_PREVIEW_SUFFIX;
+   c.reportEveryRows = Math.max( 0, selection.config.reportEveryRows );
+   afeCloseWindowById( c.outputId );
+   return afeRun( sourceWindow, c, selection.analysis ).resultWindow;
+}
 function afeShowError( message )
 {
    (new MessageBox( message, "Adaptive Faint Emission", StdIcon_Error, StdButton_Ok )).execute();
@@ -728,11 +823,11 @@ function afeLoadState()
       reportEveryRows: 256, custom: null };
    try
    {
-      var raw = Settings.read( "SamAdaptiveFaintEmission/GUI_v4", DataType.UTF16String );
+      var raw = Settings.read( "SamAdaptiveFaintEmission/GUI_v7", DataType.UTF16String );
       if ( raw )
       {
          var saved = JSON.parse( raw );
-         if ( saved.preset >= 0 && saved.preset <= 6 ) defaults.preset = saved.preset;
+         if ( saved.preset >= 0 && saved.preset <= 5 ) defaults.preset = saved.preset;
          if ( saved.mode >= 0 && saved.mode <= 2 ) defaults.mode = saved.mode;
          defaults.makeMasks = !!saved.makeMasks;
          if ( saved.reportEveryRows >= 0 && saved.reportEveryRows <= 4096 )
@@ -760,9 +855,9 @@ function afeSaveState( dialog )
          mode: dialog.modeCombo.currentItem,
          makeMasks: dialog.masksCheck.checked,
          reportEveryRows: dialog.progressSpin.value,
-         custom: dialog.presetCombo.currentItem === 6 ? dialog.selected.config : dialog.state.custom
+         custom: dialog.presetCombo.currentItem === 5 ? dialog.selected.config : dialog.state.custom
       };
-      Settings.write( "SamAdaptiveFaintEmission/GUI_v4", DataType.UTF16String,
+      Settings.write( "SamAdaptiveFaintEmission/GUI_v7", DataType.UTF16String,
                       JSON.stringify( state ) );
    }
    catch ( e ) { console.writeln( "NOTICE: GUI settings could not be saved: " + e ); }
@@ -856,7 +951,7 @@ function AFEDialog()
    this.windowTitle = "Adaptive Faint Emission";
    this.fields = {}; this.quick = {}; this.updating = false;
    this.analysis = null; this.analysisId = ""; this.configSourceId = "";
-   this.currentSelectionMode = "hybrid";
+   this.currentSelectionMode = "emission";
    this.beforeBitmap = null; this.afterBitmap = null;
    this.state = afeLoadState(); this.selected = null;
    var active = ImageWindow.activeWindow;
@@ -880,18 +975,17 @@ function AFEDialog()
    presetLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
    presetRow.add( presetLabel );
    this.presetCombo = new ComboBox( this );
-   this.presetCombo.addItem( "Auto · balanced faint structure" );
-   this.presetCombo.addItem( "Emission nebula / supernova remnant" );
-   this.presetCombo.addItem( "Galaxy · arms, dust and halo" );
-   this.presetCombo.addItem( "Broadband / reflection nebula" );
-   this.presetCombo.addItem( "Veil reference style · strong tone" );
-   this.presetCombo.addItem( "Exact Guide · original equations" );
+   this.presetCombo.addItem( "Auto · balanced emission detail" );
+   this.presetCombo.addItem( "Auto · aggressive faint emission" );
+   this.presetCombo.addItem( "Auto · ultra-aggressive faint emission" );
+   this.presetCombo.addItem( "Auto · conservative clean emission" );
+   this.presetCombo.addItem( "Base defaults · manual emission start" );
    this.presetCombo.addItem( "Custom · fine tuning" );
    this.presetCombo.currentItem = this.state.preset;
    presetRow.add( this.presetCombo, 100 ); this.sizer.add( presetRow );
 
    this.statusLabel = new Label( this );
-   this.statusLabel.text = "Select source. Auto values come from sampled image pixels.";
+   this.statusLabel.text = "Select a stretched RGB emission-target image. Auto values are derived from the image itself.";
    this.statusLabel.wordWrapping = true; this.sizer.add( this.statusLabel );
    this.tabs = new TabBox( this );
    this.sizer.add( this.tabs, 100 );
@@ -913,7 +1007,7 @@ function AFEDialog()
       function(v) { dialog.fields.toneSaturation.setValue(v); dialog.markCustom(); } );
    quickPage.sizer.add( quickGroup );
    var note = new Label( quickPage );
-   note.text = "Auto uses image statistics; subject sets safe starting emphasis. Tone affects the whole RGB image. Preview is approximate at ≤1200 pixels on its long edge.";
+   note.text = "Auto is derived from the stretched image itself and is dedicated to emission targets. Preview opens a full-size preview window and also updates the small thumbnails. The preset dropdown now includes an ultra-aggressive mode for very faint nebulosity.";
    note.wordWrapping = true; quickPage.sizer.add( note );
    var previewRow = new HorizontalSizer; previewRow.spacing = 6;
    var before = afePreviewPane( quickPage, "Before", this, "beforeBitmap" );
@@ -946,9 +1040,7 @@ function AFEDialog()
    selectionLabel.textAlignment = TextAlign_Right | TextAlign_VertCenter;
    selectionRow.add( selectionLabel );
    this.selectionCombo = new ComboBox( gain );
-   this.selectionCombo.addItem( "Hybrid · broad + color" );
-   this.selectionCombo.addItem( "Emission · red/cyan" );
-   this.selectionCombo.addItem( "Luminance · broadband" );
+   this.selectionCombo.addItem( "Emission only · adaptive red/cyan" );
    selectionRow.add( this.selectionCombo, 100 );
    gain.sizer.add( selectionRow );
    afeNumeric( this, gain, "generalGain", "Common RGB", 5 );
@@ -1004,10 +1096,6 @@ function AFEDialog()
    this.autoExclusionCheck = new CheckBox( output );
    this.autoExclusionCheck.text = "Auto-detect <SourceViewId>_Protect";
    output.sizer.add( this.autoExclusionCheck );
-   this.eightBitCheck = new CheckBox( output );
-   this.eightBitCheck.text = "8-bit RGB output for exact PNG reproduction";
-   this.eightBitCheck.toolTip = "Requires an 8-bit source; reports pixels changed after rounding.";
-   output.sizer.add( this.eightBitCheck );
    this.headroomCheck = new CheckBox( output );
    this.headroomCheck.text = "Protect highlight headroom";
    output.sizer.add( this.headroomCheck );
@@ -1042,26 +1130,28 @@ function AFEDialog()
       try
       {
          dialog.analyze( true );
-         dialog.applyPreset( dialog.presetCombo.currentItem === 6 ? 0 :
+         dialog.applyPreset( dialog.presetCombo.currentItem === 5 ? 0 :
                              dialog.presetCombo.currentItem );
       }
       catch ( e ) { afeShowError( String( e ) ); }
    };
    buttons.add( analyzeButton );
    var previewButton = new PushButton( this );
-   previewButton.text = "Preview";
+   previewButton.text = "Full-size preview";
    previewButton.onClick = function()
    {
       try
       {
-         dialog.statusLabel.text = "Making downscaled preview…";
+         dialog.statusLabel.text = "Making full-size preview…";
          processEvents();
-         var pair = afeRenderPreview( dialog.collect() );
+         var sel = dialog.collect();
+         var previewWindow = afeCreateFullPreview( sel );
+         var pair = afeRenderThumbPreview( sel );
          dialog.beforeBitmap = pair.before; dialog.afterBitmap = pair.after;
          dialog.beforeControl.update(); dialog.afterControl.update();
          dialog.tabs.currentPageIndex = 0;
-         dialog.statusLabel.text = "Preview " + pair.width + "×" + pair.height +
-            ". Adjust sliders and preview again.";
+         dialog.statusLabel.text = "Preview window: " + previewWindow.mainView.id +
+            " (" + previewWindow.mainView.image.width + "×" + previewWindow.mainView.image.height + ").";
       }
       catch ( e ) { afeShowError( String( e ) ); }
    };
@@ -1085,7 +1175,7 @@ function AFEDialog()
       dialog.analysisId = ""; dialog.configSourceId = "";
       dialog.beforeBitmap = null; dialog.afterBitmap = null;
       dialog.beforeControl.update(); dialog.afterControl.update();
-      dialog.statusLabel.text = "Source changed. Preview or Run recalculates defaults.";
+      dialog.statusLabel.text = "Source changed. Analyze or preview to recalculate emission defaults.";
    };
    this.presetCombo.onItemSelected = function( index )
    {
@@ -1098,7 +1188,6 @@ function AFEDialog()
    this.smoothCheck.onCheck = function() { if ( !dialog.updating ) dialog.markCustom(); };
    this.headroomCheck.onCheck = function() { if ( !dialog.updating ) dialog.markCustom(); };
    this.autoExclusionCheck.onCheck = function() { if ( !dialog.updating ) dialog.markCustom(); };
-   this.eightBitCheck.onCheck = function() { if ( !dialog.updating ) dialog.markCustom(); };
    this.selectionCombo.onItemSelected = function() { if ( !dialog.updating ) dialog.markCustom(); };
    try { this.applyPreset( this.state.preset ); }
    catch ( e )
@@ -1117,9 +1206,9 @@ AFEDialog.prototype.setFields = function( c )
    this.smoothCheck.checked = !!c.smoothRGB;
    this.headroomCheck.checked = !!c.limitHighlights;
    this.autoExclusionCheck.checked = !!c.autoExclusion;
-   this.eightBitCheck.checked = !!c.use8BitOutput;
-   this.currentSelectionMode = c.selectionMode || "emission";
-   this.selectionCombo.currentItem = { hybrid: 0, emission: 1, luminance: 2 }[this.currentSelectionMode];
+   this.currentSelectionMode = "emission";
+   this.selectionCombo.currentItem = 0;
+   this.selectionCombo.enabled = false;
    this.syncQuick(); this.updating = false;
 };
 AFEDialog.prototype.syncQuick = function()
@@ -1158,14 +1247,14 @@ AFEDialog.prototype.readFields = function()
    c.smoothRGB = this.smoothCheck.checked;
    c.limitHighlights = this.headroomCheck.checked;
    c.autoExclusion = this.autoExclusionCheck.checked;
-   c.use8BitOutput = this.eightBitCheck.checked;
-   c.selectionMode = [ "hybrid", "emission", "luminance" ][this.selectionCombo.currentItem];
+   c.use8BitOutput = false;
+   c.selectionMode = "emission";
    return c;
 };
 AFEDialog.prototype.markCustom = function()
 {
    this.updating = true;
-   this.presetCombo.currentItem = 6;
+   this.presetCombo.currentItem = 5;
    this.updating = false;
 };
 AFEDialog.prototype.analyze = function( force )
@@ -1181,20 +1270,19 @@ AFEDialog.prototype.analyze = function( force )
       this.analysis.p01.toFixed( 5 ) + " / " +
       this.analysis.p50.toFixed( 5 ) + " / " +
       this.analysis.p99.toFixed( 5 ) +
-      "; " + this.analysis.sampleCount + " samples.";
+      "; samples: " + this.analysis.sampleCount +
+      "; red bias: " + this.analysis.redBias.toFixed( 2 ) +
+      "; cyan bias: " + this.analysis.cyanBias.toFixed( 2 ) + ".";
    return this.analysis;
 };
 AFEDialog.prototype.applyPreset = function( index )
 {
-   var c = index === 6 ? (this.state.custom || this.readFields()) :
-           index === 5 ? afeGuidePreset() :
-           afeCategoryPreset( index, this.analyze( false ) );
-   if ( index === 5 && this.sourceView && this.sourceView.image &&
-        this.sourceView.image.bitsPerSample === 8 ) c.use8BitOutput = true;
+   var c = index === 5 ? (this.state.custom || this.readFields()) :
+           afeEmissionPreset( index, this.analyze( false ) );
    this.setFields( c );
    this.configSourceId = this.sourceView ? this.sourceView.id : "";
    this.updating = true;
-   this.masksCheck.checked = index === 5;
+   this.masksCheck.checked = false;
    this.updating = false;
 };
 AFEDialog.prototype.collect = function()
@@ -1202,7 +1290,7 @@ AFEDialog.prototype.collect = function()
    var sourceWindow = afeSource( this.sourceView );
    var stale = this.configSourceId !== this.sourceView.id;
    var a = this.analyze( false );
-   if ( stale && this.presetCombo.currentItem !== 6 )
+   if ( stale && this.presetCombo.currentItem !== 5 )
       this.applyPreset( this.presetCombo.currentItem );
    var c = this.readFields();
    c.mode = [ "enhance", "analyze", "masks" ][this.modeCombo.currentItem];
@@ -1212,9 +1300,6 @@ AFEDialog.prototype.collect = function()
    c.preview = false;
    afeValidate( c );
    afeExclusion( sourceWindow.mainView, c.exclusionMaskId, c.autoExclusion );
-   if ( c.use8BitOutput && c.mode === "enhance" &&
-        sourceWindow.mainView.image.bitsPerSample !== 8 )
-      afeFail( "8-bit reproduction output requires an 8-bit RGB source" );
    return { sourceWindow: sourceWindow, config: c, analysis: a };
 };
 function afeMain()
