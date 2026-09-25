@@ -4,7 +4,7 @@
       <p>Personal PixInsight scripts.</p>
    </description>
    <platform os="all" arch="noarch" version="1.8.9:1.9.99">
-      <package fileName="pi_scripts-20260925-000424.zip" sha1="ad8b6dc5b190d9c6b97de1fb6e15730cbab9ed24" type="script" releaseDate="20260925">
+      <package fileName="pi_scripts-20260925-001719.zip" sha1="d16a564956269697e301c7fd91053641445d0bca" type="script" releaseDate="20260925">
          <title>Personal PixInsight scripts 20260925</title>
          <description>All JavaScript files under the pi_scripts directory.</description>
       </package>
