@@ -7,7 +7,7 @@
 #include <pjsr/Interpolation.jsh>
 #include <pjsr/ResizeMode.jsh>
 
-#feature-id    Sam's Scripts > Adaptive Faint Emission
+#feature-id    Sam's Scripts >Enhance Emissions
 #feature-info  Emission-target-only adaptive nonlinear enhancer with soft tone mapping, palette-independent faint-emission masks, star protection, full-size preview, and optional final downsampling.
 
 /*
